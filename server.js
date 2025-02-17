@@ -1,107 +1,178 @@
-const express = require('express');
-const fs = require('fs').promises;
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const cors = require('cors'); // Importar cors
+//Acitivdad 3 Full Stack: Jorge Alberto y Erick Patricio
+
+const express = require("express");
+const bodyParser = require("body-parser");
+const fs = require("fs").promises;
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+
 const app = express();
-const PORT = 5000;
+const PORT = 3000;
+const SECRET_KEY = "mi_secreto"; // clave segura
 
-app.use(cors()); // Usar cors
-app.use(express.json());
+app.use(bodyParser.json());
 
-// Middleware de autenticación
-const authMiddleware = (req, res, next) => {
-  const token = req.header('Authorization')?.replace('Bearer ', '');
-  if (!token) {
-    return res.status(401).send({ error: 'No autorizado' });
-  }
-  try {
-    const decoded = jwt.verify(token, 'secretKey');
-    req.user = decoded;
-    next();
-  } catch (error) {
-    res.status(401).send({ error: 'No autorizado' });
-  }
+// cargamos tareas de json
+const cargarTareas = async () => {
+    try {
+        const data = await fs.readFile("tareas.json", "utf8");
+        return JSON.parse(data);
+    } catch (error) {
+        return [];
+    }
 };
 
-// Rutas para gestionar tareas
-app.get('/tareas', async (req, res) => {
-  try {
-    const data = await fs.readFile('./tareas.json', 'utf8');
-    const tareas = JSON.parse(data);
-    res.status(200).json(tareas);
-  } catch (error) {
-    res.status(500).json({ error: 'Error al leer las tareas' });
-  }
+// guardamos tareas en json
+const guardarTareas = async (tareas) => {
+    await fs.writeFile("tareas.json", JSON.stringify(tareas, null, 2));
+};
+
+/*
+// Middleware de autenticación
+const verificarToken = (req, res, next) => {
+    const token = req.header("Authorization");
+    if (!token) return res.status(401).json({ mensaje: "Acceso denegado" });
+
+    try {
+        const verificado = jwt.verify(token, SECRET_KEY);
+        req.usuario = verificado;
+        next();
+    } catch (error) {
+        res.status(400).json({ mensaje: "Token inválido" });
+    }
+};
+
+
+const verificarToken = (req, res, next) => {
+    const token = req.header("Authorization");
+    console.log("Token recibido:", token);  // Depuración para verificar si se recibe el token
+    if (!token) return res.status(401).json({ mensaje: "Acceso denegado" });
+
+    try {
+        const verificado = jwt.verify(token, SECRET_KEY);
+        req.usuario = verificado;
+        next();
+    } catch (error) {
+        console.log("Error al verificar token:", error);  // Depuración
+        res.status(400).json({ mensaje: "Token inválido" });
+    }
+};
+*/
+
+//verificamos el token
+const verificarToken = (req, res, next) => {
+    const token = req.header("Authorization");
+    if (!token) return res.status(401).json({ mensaje: "Acceso denegado" });
+
+    try {
+        const verificado = jwt.verify(token.replace("Bearer ", ""), SECRET_KEY);
+        req.usuario = verificado;
+        next();
+    } catch (error) {
+        res.status(400).json({ mensaje: "Token inválido" });
+    }
+};
+
+
+// rutas de usuarios para autenticar
+app.post("/register", async (req, res) => {
+    const { usuario, password } = req.body;
+    if (!usuario || !password) {
+        return res.status(400).json({ mensaje: "Se requiere usuario y contrasena" });
+    }
+
+    try {
+        const usuarios = JSON.parse(await fs.readFile("users.json", "utf8")) || [];
+        if (usuarios.find((u) => u.usuario === usuario)) {
+            return res.status(400).json({ mensaje: "Ya existe este usuario" });
+        }
+
+        const hash = await bcrypt.hash(password, 10);
+        usuarios.push({ usuario, password: hash });
+
+        await fs.writeFile("users.json", JSON.stringify(usuarios, null, 2));
+        res.status(201).json({ mensaje: "El usuario ha sido registrado" });
+    } catch (error) {
+        res.status(500).json({ mensaje: "Error en el servidor" });
+    }
 });
 
-app.post('/tareas', authMiddleware, async (req, res) => {
-  const { titulo, descripcion } = req.body;
-  try {
-    const data = await fs.readFile('./tareas.json', 'utf8');
-    const tareas = JSON.parse(data);
+app.post("/login", async (req, res) => {
+    const { usuario, password } = req.body;
+
+    try {
+        const usuarios = JSON.parse(await fs.readFile("users.json", "utf8")) || [];
+        const usuarioEncontrado = usuarios.find((u) => u.usuario === usuario);
+        if (!usuarioEncontrado) {
+            return res.status(400).json({ mensaje: "El usuario o contraseña son incorrectos" });
+        }
+
+        const esValido = await bcrypt.compare(password, usuarioEncontrado.password);
+        if (!esValido) {
+            return res.status(400).json({ mensaje: "El usuario o contraseña son incorrectos" });
+        }
+
+        //expiracion del token
+        const token = jwt.sign({ usuario }, SECRET_KEY, { expiresIn: "1h" });
+        res.json({ token });
+    } catch (error) {
+        res.status(500).json({ mensaje: "Error en el servidor" }); // por si algo sucede
+    }
+});
+
+// rutas de tareas con autenticacion
+app.get("/tareas", verificarToken, async (req, res) => {
+    const tareas = await cargarTareas();
+    res.json(tareas);
+});
+
+app.post("/tareas", verificarToken, async (req, res) => {
+    const { titulo, descripcion } = req.body;
+    if (!titulo || !descripcion) {
+        return res.status(400).json({ mensaje: "Necesita un título y una descripción " });
+    }
+
+    const tareas = await cargarTareas();
     const nuevaTarea = { id: tareas.length + 1, titulo, descripcion };
     tareas.push(nuevaTarea);
-    await fs.writeFile('./tareas.json', JSON.stringify(tareas));
+    await guardarTareas(tareas);
     res.status(201).json(nuevaTarea);
-  } catch (error) {
-    res.status(500).json({ error: 'Error al agregar la tarea' });
-  }
 });
 
-app.put('/tareas/:id', authMiddleware, async (req, res) => {
-  const { id } = req.params;
-  const { titulo, descripcion } = req.body;
-  try {
-    const data = await fs.readFile('./tareas.json', 'utf8');
-    const tareas = JSON.parse(data);
-    const tareaIndex = tareas.findIndex(t => t.id === parseInt(id));
-    if (tareaIndex !== -1) {
-      tareas[tareaIndex] = { id: parseInt(id), titulo, descripcion };
-      await fs.writeFile('./tareas.json', JSON.stringify(tareas));
-      res.status(200).json(tareas[tareaIndex]);
-    } else {
-      res.status(404).json({ error: 'Tarea no encontrada' });
-    }
-  } catch (error) {
-    res.status(500).json({ error: 'Error al actualizar la tarea' });
-  }
+app.put("/tareas/:id", verificarToken, async (req, res) => {
+    const { id } = req.params;
+    const { titulo, descripcion } = req.body;
+
+    const tareas = await cargarTareas();
+    const tarea = tareas.find((t) => t.id == id);
+    if (!tarea) return res.status(404).json({ mensaje: "No se encontro la tarea" });
+
+    tarea.titulo = titulo || tarea.titulo;
+    tarea.descripcion = descripcion || tarea.descripcion;
+    await guardarTareas(tareas);
+    res.json(tarea);
 });
 
-app.delete('/tareas/:id', authMiddleware, async (req, res) => {
-  const { id } = req.params;
-  try {
-    const data = await fs.readFile('./tareas.json', 'utf8');
-    const tareas = JSON.parse(data);
-    const nuevaListaTareas = tareas.filter(t => t.id !== parseInt(id));
-    await fs.writeFile('./tareas.json', JSON.stringify(nuevaListaTareas));
-    res.status(200).json({ message: 'Tarea eliminada' });
-  } catch (error) {
-    res.status(500).json({ error: 'Error al eliminar la tarea' });
-  }
+app.delete("/tareas/:id", verificarToken, async (req, res) => {
+    const { id } = req.params;
+    let tareas = await cargarTareas();
+    tareas = tareas.filter((t) => t.id != id);
+    await guardarTareas(tareas);
+    res.json({ mensaje: "La tarea ha sido eliminada" });
 });
 
-// Rutas de autenticación
-app.post('/register', async (req, res) => {
-  const { username, password } = req.body;
-  const hashedPassword = await bcrypt.hash(password, 8);
-  // Aquí deberías guardar el usuario en una base de datos
-  res.status(201).send({ username, password: hashedPassword });
+app.get("/", (req, res) => {
+    res.send("Si ves esto funciona la app");
 });
 
-app.post('/login', async (req, res) => {
-  const { username, password } = req.body;
-  // Aquí deberías verificar el usuario en una base de datos
-  const token = jwt.sign({ username }, 'secretKey');
-  res.status(200).send({ token });
-});
 
-// Middleware de manejo de errores
+// middleware por si hay errores
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).send('Algo salió mal!');
+    console.error(err.stack);
+    res.status(500).json({ mensaje: "Error interno del servidor" });
 });
 
+// iniciamos el servidor
 app.listen(PORT, () => {
-  console.log(`Servidor corriendo en http://localhost:${PORT}`);
+    console.log(`Servidor funcionando en http://localhost:${PORT}`);
 });
